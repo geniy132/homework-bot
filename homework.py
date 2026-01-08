@@ -92,7 +92,7 @@ def check_response(response):
         raise TypeError(f'Ответ API не является словарем, '
                         f'получен тип: {type(response)}')
     if not {'homeworks'}.issubset(response.keys()):
-        raise ValueError(f'В ответе API отсутствует ключ "homeworks"')
+        raise ValueError('В ответе API отсутствует ключ "homeworks"')
     if not isinstance(response['homeworks'], list):
         raise TypeError('Данные под ключом "homeworks" не являются списком, '
                         f'получен тип: {type(response['homeworks'])}')
