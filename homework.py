@@ -1,18 +1,20 @@
 import logging
 import os
-import requests
 import sys
 import time
 
 from contextlib import suppress
+from functools import wraps
 from http import HTTPStatus
+
+import requests
+
 from dotenv import load_dotenv
 from telebot import telebot, TeleBot
 
 from exceptions import (
     ApiRequestError,
-    TokensNotFoundException,
-    ErrorsException
+    ProgramErrorsException
 )
 
 
@@ -38,24 +40,29 @@ def check_tokens():
     """Проверяем доступность перемнных, необходимых для работы программы."""
     tokens = ['PRACTICUM_TOKEN', 'TELEGRAM_TOKEN', 'TELEGRAM_CHAT_ID']
     missing_tokens = [token for token in tokens if not globals()[token]]
+    missing_tokens_message = (
+        'Отсутствует обязательная переменная окружения: '
+        f'{", ".join(missing_tokens)}\n'
+        'Программа принудительно остановлена.'
+    )
     if missing_tokens:
-        logging.critical(f'Отсутствует обязательная переменная окружения: '
-                         f'{", ".join(missing_tokens)}\n'
-                         'Программа принудительно остановлена.')
-        raise ValueError
-    return True
+        logging.critical(missing_tokens_message)
+        raise ValueError(missing_tokens_message)
 
 
 def deduplicate_messages(func):
     """Функция-декоратор для send_message."""
     last_sent_message = None
 
+    @wraps(func)
     def wrapper(bot, message):
         """Проверяем сообщение на дубль."""
         nonlocal last_sent_message
         if message != last_sent_message:
             func(bot, message)
             last_sent_message = message
+        else:
+            logging.debug(f'Сообщение {message} совпало с предыдущим.')
     return wrapper
 
 
@@ -79,7 +86,7 @@ def get_api_answer(timestamp):
     except requests.RequestException as error:
         raise ApiRequestError(f'Ошибка при выполнении запроса: {error}')
     if response.status_code != HTTPStatus.OK:
-        raise ApiRequestError(f'Сбой в работе программы: Эндпоинт недоступен. '
+        raise ApiRequestError('Сбой в работе программы: Эндпоинт недоступен. '
                               f'Код ответа API: {response.status_code}')
     logging.debug('Запрос выполнен успешно, получаем ответ.')
     return response.json()
@@ -91,31 +98,30 @@ def check_response(response):
     if not isinstance(response, dict):
         raise TypeError(f'Ответ API не является словарем, '
                         f'получен тип: {type(response)}')
-    if not {'homeworks'}.issubset(response.keys()):
+    if 'homeworks' not in response:
         raise ValueError('В ответе API отсутствует ключ "homeworks"')
     if not isinstance(response['homeworks'], list):
         raise TypeError('Данные под ключом "homeworks" не являются списком, '
                         f'получен тип: {type(response['homeworks'])}')
     logging.debug('Проверка ответа API успешно завершена.')
-    return True
 
 
 def parse_status(homework):
     """Извлекаем статус домашней работы."""
     logging.debug(f'Начинаем извлечение статуса домашней работы {homework}.')
     keys = ['homework_name', 'status']
-    if not all(key in homework for key in keys):
-        missing_keys = set(keys) - set(homework.keys())
+    missing_keys = set(keys) - set(homework.keys())
+    if missing_keys:
         raise KeyError(f'В ответе отсутствуют обязательные ключи: '
                        f'{", ".join(missing_keys)}.')
     homework_name = homework['homework_name']
-    status = homework.get('status')
+    status = homework['status']
     verdict = HOMEWORK_VERDICTS.get(status)
     if verdict is None:
         raise ValueError(
             f'Неожиданный статус ({status}) домашней работы "{homework_name}"'
         )
-    logging.debug(f'Статус домашней работы '
+    logging.debug('Статус домашней работы '
                   f'{homework} успешно получен ({status}).')
     return (f'Изменился статус проверки работы "{homework_name}". '
             f'{verdict}')
@@ -123,37 +129,32 @@ def parse_status(homework):
 
 def main():
     """Основная логика работы бота."""
-    if not check_tokens():
-        raise TokensNotFoundException(
-            'Программа остановлена из-за отсутствия токенов'
-        )
+    check_tokens()
     bot = TeleBot(token=TELEGRAM_TOKEN)
     timestamp = int(time.time())
 
     while True:
         try:
             response = get_api_answer(timestamp)
-            if check_response(response):
-                if not response['homeworks']:
-                    logging.debug('Список домашних работ пуст.')
-                    continue
-                homework = response['homeworks'][-1]
-                message = parse_status(homework)
-                send_message(bot, message)
-                if 'current_date' in response:
-                    timestamp = response['current_date']
-        except telebot.apihelper.ApiException as error:
-            logging.error(
+            check_response(response)
+            if not response['homeworks']:
+                logging.debug('Список домашних работ пуст.')
+                continue
+            homework = response['homeworks'][-1]
+            message = parse_status(homework)
+            send_message(bot, message)
+            timestamp = response.get('current_date', timestamp)
+        except (
+            telebot.apihelper.ApiException,
+            requests.exceptions.RequestException
+        ) as error:
+            logging.exception(
                 f'Произошла ошибка при работе с Telegram API: {error}'
             )
-        except requests.exceptions.RequestException as error:
-            logging.error(
-                f'Ошибка при выполнении HTTP-запроса: {error}'
-            )
-        except ErrorsException as error:
+        except ProgramErrorsException as error:
             message = f'Сбой в работе программы: {error}'
             logging.exception(message)
-            with suppress(ErrorsException):
+            with suppress(ProgramErrorsException):
                 send_message(bot, message)
         finally:
             time.sleep(RETRY_PERIOD)
@@ -163,10 +164,11 @@ if __name__ == '__main__':
     main()
 
     logging.basicConfig(
-        filename='bot.log',
-        filemode='w',
+        handlers=(
+            logging.StreamHandler(),
+            logging.FileHandler('bot.log', mode='w', encoding='utf-8')
+        ),
         format='%(asctime)s, %(levelname)s, %(message)s',
         level=logging.DEBUG,
-        encoding='utf-8',
         stream=sys.stdout,
     )
