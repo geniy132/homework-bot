@@ -2,13 +2,11 @@ import logging
 import os
 import sys
 import time
-
 from contextlib import suppress
 from functools import wraps
 from http import HTTPStatus
 
 import requests
-
 from dotenv import load_dotenv
 from telebot import telebot, TeleBot
 
@@ -112,7 +110,7 @@ def parse_status(homework):
     keys = ['homework_name', 'status']
     missing_keys = set(keys) - set(homework.keys())
     if missing_keys:
-        raise KeyError(f'В ответе отсутствуют обязательные ключи: '
+        raise KeyError('В ответе отсутствуют обязательные ключи: '
                        f'{", ".join(missing_keys)}.')
     homework_name = homework['homework_name']
     status = homework['status']
@@ -131,7 +129,7 @@ def main():
     """Основная логика работы бота."""
     check_tokens()
     bot = TeleBot(token=TELEGRAM_TOKEN)
-    timestamp = int(time.time())
+    timestamp = 0
 
     while True:
         try:
@@ -146,12 +144,9 @@ def main():
             timestamp = response.get('current_date', timestamp)
         except (
             telebot.apihelper.ApiException,
-            requests.exceptions.RequestException
+            requests.exceptions.RequestException,
+            ProgramErrorsException
         ) as error:
-            logging.exception(
-                f'Произошла ошибка при работе с Telegram API: {error}'
-            )
-        except ProgramErrorsException as error:
             message = f'Сбой в работе программы: {error}'
             logging.exception(message)
             with suppress(ProgramErrorsException):
